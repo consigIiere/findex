@@ -75,16 +75,16 @@ def run_eager(corpus_path: str | Path):
 if __name__ == "__main__":
     corpus = "data"
 
-    print("=== Запуск Streaming версії ===")
+    print(" Запуск Streaming версії ")
     s_res = run_streaming(corpus)
     print(f"Час: {s_res['time_sec']:.3f} с | Пікова пам'ять: {s_res['peak_mem_mb']:.2f} МБ")
     print(f"Документів: {s_res['docs']} | Токенів: {s_res['tokens']} | Словник: {s_res['unique_vocab']}")
 
-    print("\n=== Запуск Eager версії ===")
+    print("\n Запуск Eager версії")
     e_res = run_eager(corpus)
     print(f"Час: {e_res['time_sec']:.3f} с | Пікова пам'ять: {e_res['peak_mem_mb']:.2f} МБ")
     print(f"Документів: {e_res['docs']} | Токенів: {e_res['tokens']} | Словник: {e_res['unique_vocab']}")
 
-    print("\n=== Топ-10 найчастіших слів корпусу ===")
+    print("\nТоп-10 найчастіших слів корпусу")
     for word, count in s_res["top_50"][:10]:
         print(f"{word}: {count}")
