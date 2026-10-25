@@ -2,25 +2,18 @@ from dataclasses import dataclass, field
 
 
 @dataclass(slots=True)
-class DocMeta:
-    """Метадані документа: ідентифікатор та загальна довжина у токенах."""
+class Posting:
+    """Запис у списку інвертованого індексу."""
+
     doc_id: str
-    length: int
+    freq: int = 1
+    positions: list[int] = field(default_factory=lambda: list[int]())
 
 
 @dataclass(slots=True)
-class Posting:
-    """Входження терма в документ зі збереженням індексів позицій слів."""
-    doc_id: str
-    freq: int
-    positions: list[int] = field(default_factory=list)
-
-
-@dataclass(order=True, slots=True)
 class SearchResult:
-    """
-    Результат ранжованого пошуку.
-    """
+    """Результат ранжованого пошуку."""
+
+    doc_id: str
     score: float
-    doc_id: str = field(compare=True)
-    snippet: str = field(default="", compare=False)
+    snippet: str = ""

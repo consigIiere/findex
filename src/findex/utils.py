@@ -1,51 +1,49 @@
-from functools import wraps
+import functools
 import re
+import sys
 import time
-from typing import Any, Callable
+from collections.abc import Callable, Sequence
+from typing import ParamSpec, TypeVar
+
+P = ParamSpec("P")
+R = TypeVar("R")
 
 
-def timed(func: Callable[..., Any]) -> Callable[..., Any]:
-    """
-    Декоратор для заміру часу виконання функцій (search, build, load)
-    зі збереженням метаданих через functools.wraps.
-    """
-    @wraps(func)
-    def wrapper(*args: Any, **kwargs: Any) -> Any:
+def timed(func: Callable[P, R]) -> Callable[P, R]:
+    """Декоратор для заміру часу виконання функції з виводом у stderr."""
+
+    @functools.wraps(func)
+    def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
         start_time = time.perf_counter()
         result = func(*args, **kwargs)
         elapsed = time.perf_counter() - start_time
-        print(f"[TIMED] {func.__name__} виконано за {elapsed:.5f} с")
+        sys.stderr.write(f"[TIMED] {func.__name__} виконано за {elapsed:.5f} с\n")
         return result
 
     return wrapper
 
 
-def extract_snippet(text: str, query_terms: list[str], window: int = 80) -> str:
-    """
-    Формує сніпет довжиною близько 80 символів навколо першого знайденого терма
-    з підсвіткою слів квадратними дужками [терм].
-    """
-    lower_text = text.casefold()
-    first_match_idx = -1
+def extract_snippet(text: str, query: str | Sequence[str], window: int = 40) -> str:
+    """Витягує фрагмент тексту навколо першого входження терма із підсвічуванням."""
+    if isinstance(query, str):
+        words = re.findall(r"\b\w+\b", query.lower())
+    else:
+        words = [w.lower() for w in query if w]
 
-    for term in query_terms:
-        idx = lower_text.find(term.casefold())
-        if idx != -1 and (first_match_idx == -1 or idx < first_match_idx):
-            first_match_idx = idx
+    if not words:
+        return text[: window * 2].strip() + ("..." if len(text) > window * 2 else "")
 
-    if first_match_idx == -1:
-        snippet_text = text[:window].strip()
-        return f"{snippet_text}..." if len(text) > window else snippet_text
+    pattern = re.compile(rf"\b({'|'.join(re.escape(w) for w in words)})\b", re.IGNORECASE)
+    match = pattern.search(text)
+    if not match:
+        return text[: window * 2].strip() + ("..." if len(text) > window * 2 else "")
 
-    start = max(0, first_match_idx - window // 2)
-    end = min(len(text), first_match_idx + window // 2)
+    start = max(0, match.start() - window)
+    end = min(len(text), match.end() + window)
 
-    snippet_slice = text[start:end].replace("\n", " ").strip()
-
-    for term in query_terms:
-        pattern = re.compile(re.escape(term), re.IGNORECASE)
-        snippet_slice = pattern.sub(lambda m: f"[{m.group(0)}]", snippet_slice)
+    snippet = text[start:end].replace("\n", " ").strip()
+    highlighted = pattern.sub(r"[\1]", snippet)
 
     prefix = "..." if start > 0 else ""
     suffix = "..." if end < len(text) else ""
-    return f"{prefix}{snippet_slice}{suffix}"
+    return f"{prefix}{highlighted}{suffix}"

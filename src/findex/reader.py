@@ -1,17 +1,21 @@
+import os
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Iterator, Tuple
 
 
-def iter_documents(corpus_path: str | Path) -> Iterator[Tuple[str, str]]:
+def read_corpus(corpus_dir: str | Path) -> Iterator[tuple[str, str]]:
+    """Рекурсивно або послідовно читає всі txt-файли з теки."""
+    path = Path(corpus_dir)
+    if not path.is_dir():
+        return
 
-    path = Path(corpus_path)
-
-    if not path.exists():
-        raise FileNotFoundError("Корпус не знайдено за шляхом:", path)
-
-    for file_path in path.rglob("*.txt"):
-        if file_path.is_file():
-            with open(file_path, mode="r", encoding="utf-8", errors="replace") as f:
-                content = f.read()
-                doc_id = str(file_path.relative_to(path))
-                yield doc_id, content
+    for root, _, files in os.walk(path):
+        for file in sorted(files):
+            if file.endswith(".txt"):
+                file_path = Path(root) / file
+                try:
+                    content = file_path.read_text(encoding="utf-8")
+                    yield file, content
+                except UnicodeDecodeError:
+                    content = file_path.read_text(encoding="utf-8", errors="ignore")
+                    yield file, content

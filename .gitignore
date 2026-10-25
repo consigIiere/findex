@@ -4,3 +4,10 @@ index.bin
 __pycache__/
 *.pyc
 .vscode/
+__pycache__/
+*.pyc
+.coverage
+.pytest_cache/
+.hypothesis/
+.ruff_cache/
+index.bin

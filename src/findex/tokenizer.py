@@ -1,12 +1,12 @@
 import re
 import unicodedata
-from typing import Iterator
+from collections.abc import Iterator
 
-TOKEN_PATTERN = re.compile(r"\b\w+(?:['’-]\w+)*\b")
+TOKEN_RE = re.compile(r"[\w]+(?:['’\-][\w]+)*")
+
 
 def tokenize(text: str) -> Iterator[str]:
-
-    normalized_text = unicodedata.normalize("NFC", text).casefold()
-
-    for match in TOKEN_PATTERN.finditer(normalized_text):
-        yield match.group(0)
+    """Розбиває текст на токени в нижньому регістрі з NFC-нормалізацією."""
+    normalized = unicodedata.normalize("NFC", text)
+    for match in TOKEN_RE.finditer(normalized):
+        yield match.group(0).lower()

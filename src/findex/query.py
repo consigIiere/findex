@@ -1,189 +1,176 @@
-from abc import ABC, abstractmethod
 import re
-from typing import Set
-
-from findex.index import InvertedIndex
-from findex.tokenizer import tokenize
-
-
-# --- Вузли дерева абстрактного синтаксису (AST) ---
-
-class Node(ABC):
-    """Базовий абстрактний вузол синтаксичного дерева запиту."""
-
-    @abstractmethod
-    def evaluate(self, index: InvertedIndex) -> set[str]:
-        """Повертає множину ідентифікаторів документів (doc_id), що задовольняють умову."""
-        pass
+from collections.abc import Iterator
+from dataclasses import dataclass
+from enum import Enum, auto
 
 
-class Term(Node):
-    """Вузол одиночного терма."""
-
-    def __init__(self, value: str) -> None:
-        self.value = value.casefold()
-
-    def evaluate(self, index: InvertedIndex) -> set[str]:
-        postings = index.get_postings(self.value)
-        return {p.doc_id for p in postings}
-
-    def __repr__(self) -> str:
-        return f"Term({self.value!r})"
+class TokenType(Enum):
+    WORD = auto()
+    PHRASE = auto()
+    AND = auto()
+    OR = auto()
+    NOT = auto()
+    LPAREN = auto()
+    RPAREN = auto()
+    EOF = auto()
 
 
-class Phrase(Node):
-    """
-    Вузол точної фрази у лапках: "event loop".
-    Перевіряє, щоб слова йшли послідовно одне за одним за збереженими позиціями.
-    """
-
-    def __init__(self, terms: list[str]) -> None:
-        self.terms = [t.casefold() for t in terms]
-
-    def evaluate(self, index: InvertedIndex) -> set[str]:
-        if not self.terms:
-            return set()
-
-        # Початковий список: документи для першого слова
-        first_postings = {p.doc_id: p.positions for p in index.get_postings(self.terms[0])}
-        matching_docs: set[str] = set(first_postings.keys())
-
-        # Перевіряємо послідовність кожного наступного слова
-        for offset, term in enumerate(self.terms[1:], start=1):
-            term_postings = {p.doc_id: set(p.positions) for p in index.get_postings(term)}
-            matching_docs &= term_postings.keys()
-
-            valid_in_this_step: set[str] = set()
-            for doc_id in matching_docs:
-                prev_positions = first_postings[doc_id]
-                curr_positions = term_postings[doc_id]
-                # Перевіряємо наявність позиції pos + offset
-                if any((pos + offset) in curr_positions for pos in prev_positions):
-                    valid_in_this_step.add(doc_id)
-            matching_docs = valid_in_this_step
-
-        return matching_docs
-
-    def __repr__(self) -> str:
-        return f"Phrase({self.terms!r})"
+@dataclass(slots=True)
+class Token:
+    type: TokenType
+    value: str
 
 
-class And(Node):
-    """Логічне І: перетин результатів лівого і правого підвиразів."""
-
-    def __init__(self, left: Node, right: Node) -> None:
-        self.left = left
-        self.right = right
-
-    def evaluate(self, index: InvertedIndex) -> set[str]:
-        return self.left.evaluate(index) & self.right.evaluate(index)
-
-    def __repr__(self) -> str:
-        return f"And({self.left!r}, {self.right!r})"
+@dataclass(slots=True)
+class Term:
+    value: str
 
 
-class Or(Node):
-    """Логічне АБО: об'єднання результатів лівого і правого підвиразів."""
-
-    def __init__(self, left: Node, right: Node) -> None:
-        self.left = left
-        self.right = right
-
-    def evaluate(self, index: InvertedIndex) -> set[str]:
-        return self.left.evaluate(index) | self.right.evaluate(index)
-
-    def __repr__(self) -> str:
-        return f"Or({self.left!r}, {self.right!r})"
+@dataclass(slots=True)
+class Phrase:
+    terms: list[str]
 
 
-class Not(Node):
-    """Логічне НІ: усі документи корпусу мінус документи підвузла."""
-
-    def __init__(self, child: Node) -> None:
-        self.child = child
-
-    def evaluate(self, index: InvertedIndex) -> set[str]:
-        all_docs = set(index.docs.keys())
-        return all_docs - self.child.evaluate(index)
-
-    def __repr__(self) -> str:
-        return f"Not({self.child!r})"
+@dataclass(slots=True)
+class And:
+    left: "Node"
+    right: "Node"
 
 
-# --- Парсер запитів методом рекурсивного спуску ---
+@dataclass(slots=True)
+class Or:
+    left: "Node"
+    right: "Node"
 
-class QueryParser:
-    """
-    Парсер складних булевих запитів методом рекурсивного спуску.
-    Граматика:
-      expr   := or_expr
-      or     := and_expr ('OR' and_expr)*
-      and    := not_expr ('AND' not_expr)*
-      not    := 'NOT' not_expr | atom
-      atom   := '(' expr ')' | PHRASE | TERM
-    """
+
+@dataclass(slots=True)
+class Not:
+    child: "Node"
+
+
+Node = Term | Phrase | And | Or | Not
+
+
+class QueryLexer:
+    """Лексер для булевих пошукових запитів."""
 
     def __init__(self, text: str) -> None:
-        self.tokens = self._tokenize(text)
+        self.text = text
         self.pos = 0
 
-    def _tokenize(self, text: str) -> list[str]:
-        token_pattern = re.compile(r'"[^"]*"|\(|\)|\bAND\b|\bOR\b|\bNOT\b|[^\s()]+', re.IGNORECASE)
-        tokens = token_pattern.findall(text)
-        return tokens
+    def tokenize(self) -> Iterator[Token]:
+        phrase_regex = re.compile(r'"([^"]*)"')
+        word_regex = re.compile(r"[\w]+(?:['’\-][\w]+)*")
 
-    def _current(self) -> str | None:
-        return self.tokens[self.pos] if self.pos < len(self.tokens) else None
+        while self.pos < len(self.text):
+            if self.text[self.pos].isspace():
+                self.pos += 1
+                continue
+
+            if self.text[self.pos] == "(":
+                self.pos += 1
+                yield Token(TokenType.LPAREN, "(")
+                continue
+
+            if self.text[self.pos] == ")":
+                self.pos += 1
+                yield Token(TokenType.RPAREN, ")")
+                continue
+
+            if self.text[self.pos] == '"':
+                match = phrase_regex.match(self.text, self.pos)
+                if match:
+                    self.pos = match.end()
+                    yield Token(TokenType.PHRASE, match.group(1))
+                    continue
+                self.pos += 1
+                continue
+
+            match = word_regex.match(self.text, self.pos)
+            if match:
+                val = match.group(0)
+                self.pos = match.end()
+                val_upper = val.upper()
+                if val_upper == "AND":
+                    yield Token(TokenType.AND, val)
+                elif val_upper == "OR":
+                    yield Token(TokenType.OR, val)
+                elif val_upper == "NOT":
+                    yield Token(TokenType.NOT, val)
+                else:
+                    yield Token(TokenType.WORD, val.lower())
+                continue
+
+            self.pos += 1
+
+        yield Token(TokenType.EOF, "")
+
+
+class QueryParser:
+    """Парсер для побудови AST дерева з булевих виразів."""
+
+    def __init__(self, query: str) -> None:
+        self.tokens = list(QueryLexer(query).tokenize())
+        self.pos = 0
+
+    @property
+    def current_token(self) -> Token:
+        if self.pos < len(self.tokens):
+            return self.tokens[self.pos]
+        return Token(TokenType.EOF, "")
+
+    def advance(self) -> None:
+        if self.pos < len(self.tokens):
+            self.pos += 1
 
     def parse(self) -> Node:
-        node = self._parse_or()
+        node = self.parse_or()
         return node
 
-    def _parse_or(self) -> Node:
-        node = self._parse_and()
-        while self._current() and self._current().upper() == "OR":
-            self.pos += 1
-            right = self._parse_and()
+    def parse_or(self) -> Node:
+        node = self.parse_and()
+        while self.current_token.type == TokenType.OR:
+            self.advance()
+            right = self.parse_and()
             node = Or(node, right)
         return node
 
-    def _parse_and(self) -> Node:
-        node = self._parse_not()
-        while self._current() and self._current().upper() not in ("OR", ")"):
-            if self._current().upper() == "AND":
-                self.pos += 1
-            right = self._parse_not()
+    def parse_and(self) -> Node:
+        node = self.parse_not()
+        while self.current_token.type in (
+            TokenType.AND,
+            TokenType.WORD,
+            TokenType.PHRASE,
+            TokenType.LPAREN,
+            TokenType.NOT,
+        ):
+            if self.current_token.type == TokenType.AND:
+                self.advance()
+            right = self.parse_not()
             node = And(node, right)
         return node
 
-    def _parse_not(self) -> Node:
-        if self._current() and self._current().upper() == "NOT":
-            self.pos += 1
-            operand = self._parse_not()
-            return Not(operand)
-        return self._parse_atom()
+    def parse_not(self) -> Node:
+        if self.current_token.type == TokenType.NOT:
+            self.advance()
+            child = self.parse_primary()
+            return Not(child)
+        return self.parse_primary()
 
-    def _parse_atom(self) -> Node:
-        token = self._current()
-        if not token:
-            raise ValueError("Неочікуваний кінець запиту")
-
-        if token == "(":
-            self.pos += 1
-            sub_expr = self._parse_or()
-            if self._current() == ")":
-                self.pos += 1
-            return sub_expr
-
-        self.pos += 1
-
-        if token.startswith('"') and token.endswith('"'):
-            phrase_words = list(tokenize(token[1:-1]))
-            return Phrase(phrase_words)
-
-        return Term(token)
-
-
-def parse_query(text: str) -> Node:
-    """Зручна обгортка для парсингу рядка запиту в дерево AST."""
-    return QueryParser(text).parse()
+    def parse_primary(self) -> Node:
+        tok = self.current_token
+        if tok.type == TokenType.WORD:
+            self.advance()
+            return Term(tok.value)
+        if tok.type == TokenType.PHRASE:
+            self.advance()
+            words = [w.lower() for w in re.findall(r"[\w]+(?:['’\-][\w]+)*", tok.value)]
+            return Phrase(words)
+        if tok.type == TokenType.LPAREN:
+            self.advance()
+            node = self.parse_or()
+            if self.current_token.type == TokenType.RPAREN:
+                self.advance()
+            return node
+        self.advance()
+        return Term("")

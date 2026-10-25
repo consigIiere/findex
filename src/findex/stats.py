@@ -1,90 +1,58 @@
-import time
-import tracemalloc
 from collections import Counter
+from collections.abc import Iterator
 from pathlib import Path
+from typing import TypedDict
 
-from findex.reader import iter_documents
+from findex.reader import read_corpus
 from findex.tokenizer import tokenize
 
 
-def run_streaming(corpus_path: str | Path):
+class CorpusStats(TypedDict):
+    """Типізована структура результатів аналізу корпусу."""
 
-    tracemalloc.start()
-    start_time = time.perf_counter()
-
-    doc_count = 0
-    total_tokens = 0
-    vocab = Counter()
-
-    for _, text in iter_documents(corpus_path):
-        doc_count += 1
-        for token in tokenize(text):
-            total_tokens += 1
-            vocab[token] += 1
-
-    elapsed_time = time.perf_counter() - start_time
-    _, peak_memory = tracemalloc.get_traced_memory()
-    tracemalloc.stop()
-
-    return {
-        "mode": "Streaming (Generators)",
-        "docs": doc_count,
-        "tokens": total_tokens,
-        "unique_vocab": len(vocab),
-        "top_50": vocab.most_common(50),
-        "time_sec": elapsed_time,
-        "peak_mem_mb": peak_memory / (1024 * 1024),
-    }
+    name: str
+    num_docs: int
+    num_tokens: int
+    num_unique_tokens: int
+    avg_tokens_per_doc: float
+    top_tokens: list[tuple[str, int]]
 
 
-def run_eager(corpus_path: str | Path):
+def compute_tokens_stats(name: str, doc_tokens: list[list[str]]) -> CorpusStats:
+    """Обчислює зведену статистику за списком токенізованих документів."""
+    num_docs: int = len(doc_tokens)
+    vocab: Counter[str] = Counter()
+    total_tokens: int = 0
 
-    tracemalloc.start()
-    start_time = time.perf_counter()
+    for tokens in doc_tokens:
+        total_tokens += len(tokens)
+        vocab.update(tokens)
 
-    path = Path(corpus_path)
-    all_files = list(path.rglob("*.txt"))
+    num_unique_tokens: int = len(vocab)
+    avg_tokens: float = total_tokens / num_docs if num_docs > 0 else 0.0
+    top_tokens: list[tuple[str, int]] = vocab.most_common(10)
 
-
-    raw_texts = [f.read_text(encoding="utf-8", errors="replace") for f in all_files]
-
-
-    all_tokens = []
-    for text in raw_texts:
-        all_tokens.extend(list(tokenize(text)))
-
-    doc_count = len(raw_texts)
-    total_tokens = len(all_tokens)
-    vocab = Counter(all_tokens)
-
-    elapsed_time = time.perf_counter() - start_time
-    _, peak_memory = tracemalloc.get_traced_memory()
-    tracemalloc.stop()
-
-    return {
-        "mode": "Eager (Lists)",
-        "docs": doc_count,
-        "tokens": total_tokens,
-        "unique_vocab": len(vocab),
-        "top_50": vocab.most_common(50),
-        "time_sec": elapsed_time,
-        "peak_mem_mb": peak_memory / (1024 * 1024),
-    }
+    return CorpusStats(
+        name=name,
+        num_docs=num_docs,
+        num_tokens=total_tokens,
+        num_unique_tokens=num_unique_tokens,
+        avg_tokens_per_doc=round(avg_tokens, 2),
+        top_tokens=top_tokens,
+    )
 
 
-if __name__ == "__main__":
-    corpus = "data"
+def analyze_corpus(corpus_dir: str | Path) -> CorpusStats:
+    """Зчитує корпус та рахує загальну статистику слів."""
+    all_tokens: list[list[str]] = []
+    for _doc_id, text in read_corpus(corpus_dir):
+        doc_tokens: list[str] = list(tokenize(text))
+        all_tokens.append(doc_tokens)
 
-    print(" Запуск Streaming версії ")
-    s_res = run_streaming(corpus)
-    print(f"Час: {s_res['time_sec']:.3f} с | Пікова пам'ять: {s_res['peak_mem_mb']:.2f} МБ")
-    print(f"Документів: {s_res['docs']} | Токенів: {s_res['tokens']} | Словник: {s_res['unique_vocab']}")
+    return compute_tokens_stats(name=str(corpus_dir), doc_tokens=all_tokens)
 
-    print("\n Запуск Eager версії")
-    e_res = run_eager(corpus)
-    print(f"Час: {e_res['time_sec']:.3f} с | Пікова пам'ять: {e_res['peak_mem_mb']:.2f} МБ")
-    print(f"Документів: {e_res['docs']} | Токенів: {e_res['tokens']} | Словник: {e_res['unique_vocab']}")
 
-    print("\nТоп-10 найчастіших слів корпусу")
-    for word, count in s_res["top_50"][:10]:
-        print(f"{word}: {count}")
+def get_token_stream(corpus_dir: str | Path) -> Iterator[str]:
+    """Генератор потоку токенів з усіх документів теки."""
+    for _doc_id, text in read_corpus(corpus_dir):
+        yield from tokenize(text)

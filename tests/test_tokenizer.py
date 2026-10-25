@@ -1,19 +1,28 @@
+import pytest
+
 from findex.tokenizer import tokenize
 
 
-def test_basic_tokenization():
-    text = "Hello world! This is findex."
-    tokens = list(tokenize(text))
-    assert tokens == ["hello", "world", "this", "is", "findex"]
+@pytest.mark.parametrize(
+    ("input_text", "expected"),
+    [
+        ("Hello, World!", ["hello", "world"]),
+        ("Python 3.12 is awesome", ["python", "3", "12", "is", "awesome"]),
+        ("state-of-the-art model", ["state-of-the-art", "model"]),
+        ("don't stop believing", ["don't", "stop", "believing"]),
+        ("Київ — столиця України", ["київ", "столиця", "україни"]),
+        ("Schön, café, naïve", ["schön", "café", "naïve"]),
+        ("   ", []),
+        ("!@#$%^&*()", []),
+        ("word123 and 456word", ["word123", "and", "456word"]),
+        ("it's user's test-case", ["it's", "user's", "test-case"]),
+    ],
+)
+def test_tokenize_parametrized(input_text: str, expected: list[str]) -> None:
+    assert list(tokenize(input_text)) == expected
 
 
-def test_apostrophes_and_hyphens():
-    text = "Don't touch state-of-the-art м'ясо та з’єднати."
-    tokens = list(tokenize(text))
-    assert tokens == ["don't", "touch", "state-of-the-art", "м'ясо", "та", "з’єднати"]
-
-
-def test_numbers_and_punctuation():
-    text = "Python 3.12 was released in 2023, cost: $100."
-    tokens = list(tokenize(text))
-    assert tokens == ["python", "3", "12", "was", "released", "in", "2023", "cost", "100"]
+def test_tokenize_unicode_nfc_normalization() -> None:
+    decomposed = "киі\u0308в"
+    tokens = list(tokenize(decomposed))
+    assert tokens == ["київ"]
