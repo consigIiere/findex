@@ -1,78 +1,161 @@
-import argparse
+from collections.abc import Mapping
+from contextlib import contextmanager
+from functools import cached_property
+import math
+import os
 import pickle
-import time
-from collections import Counter, defaultdict
-from pathlib import Path
+from typing import Generator, Iterator
 
 from findex.models import DocMeta, Posting
 from findex.reader import iter_documents
 from findex.tokenizer import tokenize
 
 
-class InvertedIndex:
+class InvertedIndex(Mapping):
+    """Інвертований індекс з підтримкою інтерфейсу Mapping (dunder-методи)."""
+
     def __init__(self) -> None:
-        self.postings: dict[str, list[Posting]] = defaultdict(list)
-        self.docs: dict[str, DocMeta] = {}
+        self._postings: dict[str, list[Posting]] = {}
+        self._docs: dict[str, DocMeta] = {}
 
-    def add_document(self, doc_id: str, text: str) -> None:
-        """Індексує один документ та оновлює списки входжень (postings)."""
-        doc_tokens = list(tokenize(text))
-        doc_length = len(doc_tokens)
 
-        self.docs[doc_id] = DocMeta(doc_id=doc_id, length=doc_length)
+    def __len__(self) -> int:
+        """Повертає кількість унікальних термів в індексі: len(index)."""
+        return len(self._postings)
 
-        term_counts = Counter(doc_tokens)
+    def __iter__(self) -> Iterator[str]:
+        """Ітерація по термах індексу: for term in index."""
+        return iter(self._postings)
 
-        for term, tf in term_counts.items():
-            self.postings[term].append(Posting(doc_id=doc_id, term_frequency=tf))
+    def __getitem__(self, term: str) -> list[Posting]:
+        """Отримання списку входжень: index[term]. Викидає KeyError, якщо терм відсутній."""
+        normalized = term.casefold()
+        if normalized not in self._postings:
+            raise KeyError(f"Терм '{term}' відсутній в індексі")
+        return self._postings[normalized]
 
-    @classmethod
-    def build(cls, corpus_path: str | Path) -> "InvertedIndex":
-        """Будує індекс за один прохід по корпусу за допомогою потокового генератора."""
-        index = cls()
-        for doc_id, text in iter_documents(corpus_path):
-            index.add_document(doc_id, text)
-        return index
+    def __contains__(self, term: object) -> bool:
+        """Перевірка наявності слова: 'word' in index."""
+        if not isinstance(term, str):
+            return False
+        return term.casefold() in self._postings
+
+    def __repr__(self) -> str:
+        return f"InvertedIndex(num_docs={self.num_docs}, num_terms={len(self)})"
+
+
+    @property
+    def num_docs(self) -> int:
+        """Загальна кількість опрацьованих документів."""
+        return len(self._docs)
+
+    @property
+    def docs(self) -> dict[str, DocMeta]:
+        return self._docs
+
+    @property
+    def postings(self) -> dict[str, list[Posting]]:
+        return self._postings
+
+    @cached_property
+    def avg_doc_length(self) -> float:
+        """
+        Середня довжина документів у корпусі.
+        Значення кешується автоматично завдяки @cached_property.
+        """
+        if not self._docs:
+            return 0.0
+        total_len = sum(doc.length for doc in self._docs.values())
+        return total_len / len(self._docs)
+
+    def df(self, term: str) -> int:
+        """Document Frequency: кількість документів, у яких є зазначений терм."""
+        postings = self._postings.get(term.casefold())
+        return len(postings) if postings else 0
+
+    def idf(self, term: str) -> float:
+        """Обчислення Inverse Document Frequency за сгладженою формулою."""
+        doc_freq = self.df(term)
+        if doc_freq == 0:
+            return 0.0
+        return math.log(1.0 + (self.num_docs - doc_freq + 0.5) / (doc_freq + 0.5))
 
     def get_postings(self, term: str) -> list[Posting]:
-        """Повертає список входжень для заданого терміна."""
-        normalized_term = term.casefold()
-        return self.postings.get(normalized_term, [])
+        """Безпечне отримання списку постингів (повертає [] якщо терм не знайдено)."""
+        return self._postings.get(term.casefold(), [])
 
-    def save(self, output_path: str | Path) -> None:
-        """Зберігає індекс у бінарний файл за допомогою pickle."""
-        path = Path(output_path)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with open(path, "wb") as f:
-            pickle.dump(self, f, protocol=pickle.HIGHEST_PROTOCOL)
+    def add_document(self, doc_id: str, text: str) -> None:
+        """Індексує документ, обраховуючи точні координати та частоти слів."""
+        tokens = list(tokenize(text))
+        self._docs[doc_id] = DocMeta(doc_id=doc_id, length=len(tokens))
+
+        term_positions: dict[str, list[int]] = {}
+        for pos, token in enumerate(tokens):
+            term_positions.setdefault(token, []).append(pos)
+
+        for term, positions in term_positions.items():
+            posting = Posting(doc_id=doc_id, freq=len(positions), positions=positions)
+            self._postings.setdefault(term, []).append(posting)
 
     @classmethod
-    def load(cls, input_path: str | Path) -> "InvertedIndex":
-        """
-        Завантажує індекс із файлу pickle.
+    def build(cls, corpus_path: str) -> "InvertedIndex":
+        """Фабричний метод побудови індексу з файлів заданого корпусу."""
+        instance = cls()
+        for doc_id, text in iter_documents(corpus_path):
+            instance.add_document(doc_id, text)
+        return instance
 
-        """
-        path = Path(input_path)
-        with open(path, "rb") as f:
-            index = pickle.load(f)
-        if not isinstance(index, cls):
-            raise TypeError("Завантажений файл не є валідним об'єктом InvertedIndex")
-        return index
 
+    def save(self, filepath: str) -> None:
+        """Зберігає структури індексу у бінарний файл за допомогою pickle."""
+        os.makedirs(os.path.dirname(os.path.abspath(filepath)), exist_ok=True)
+        with open(filepath, "wb") as f:
+            pickle.dump((self._docs, self._postings), f, protocol=pickle.HIGHEST_PROTOCOL)
+
+    @classmethod
+    def load(cls, filepath: str) -> "InvertedIndex":
+        """Фабричний метод завантаження індексу з бінарного файлу."""
+        if not os.path.exists(filepath):
+            raise FileNotFoundError(f"Файл індексу не знайдено: {filepath}")
+        instance = cls()
+        with open(filepath, "rb") as f:
+            instance._docs, instance._postings = pickle.load(f)
+        return instance
+
+
+
+@contextmanager
+def open_index(path: str) -> Generator[InvertedIndex, None, None]:
+    """
+    Контекстний менеджер для безпечного завантаження та вивільнення ресурсів індексу:
+    with open_index("index.bin") as idx:
+        ...
+    Гарантовано очищує пам'ять при виході з блоку або виникненні винятку.
+    """
+    index = InvertedIndex.load(path)
+    try:
+        yield index
+    finally:
+        index._postings.clear()
+        index._docs.clear()
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Побудова та збереження Inverted Index")
-    parser.add_argument("corpus_path", type=str, help="Шлях до директорії корпусу (наприклад, data)")
-    parser.add_argument("-o", "--output", type=str, default="index.bin", help="Шлях для збереження індексу")
+    import argparse
+    import time
+
+    parser = argparse.ArgumentParser(description="Побудова інвертованого індексу")
+    parser.add_argument("corpus_path", help="Шлях до теки з документами")
+    parser.add_argument("-o", "--output", default="index.bin", help="Шлях до вихідного бінарного файлу")
+
     args = parser.parse_args()
 
     print(f"Побудова індексу для корпусу '{args.corpus_path}'...")
     start_time = time.perf_counter()
     index = InvertedIndex.build(args.corpus_path)
-    build_time = time.perf_counter() - start_time
+    elapsed = time.perf_counter() - start_time
 
-    print(f"Індекс успішно побудовано за {build_time:.2f} с")
-    print(f"Документів: {len(index.docs)} | Унікальних термінів: {len(index.postings)}")
+    print(f"Індекс успішно побудовано за {elapsed:.2f} с")
+    print(f"Документів: {index.num_docs} | Унікальних термінів: {len(index)}")
 
     index.save(args.output)
     print(f"Індекс збережено у файл '{args.output}'")

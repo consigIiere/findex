@@ -1,93 +1,105 @@
-import argparse
-import time
+from functools import lru_cache
+import heapq
+import os
+import re
 
-from findex.index import InvertedIndex
-
-
-def intersect_postings(list1: list[str], list2: list[str]) -> list[str]:
-    """
-    Алгоритм злиття двох відсортованих списків doc_id (Two-Pointer merge).
-    Працює за лінійний час O(len(list1) + len(list2)) без виділення додаткової пам'яті.
-    """
-    result = []
-    i = 0
-    j = 0
-
-    while i < len(list1) and j < len(list2):
-        doc1 = list1[i]
-        doc2 = list2[j]
-
-        if doc1 == doc2:
-            result.append(doc1)
-            i += 1
-            j += 1
-        elif doc1 < doc2:
-            i += 1
-        else:
-            j += 1
-
-    return result
+from findex.index import InvertedIndex, open_index
+from findex.models import SearchResult
+from findex.query import parse_query
+from findex.scoring import BM25Scorer, Scorer, TfidfScorer
+from findex.tokenizer import tokenize
+from findex.utils import extract_snippet, timed
 
 
-def intersect_sets(list1: list[str], list2: list[str]) -> list[str]:
-    """Перетин списків через стандартний тип set (виділяє пам'ять під хеш-таблиці)."""
-    return sorted(list(set(list1) & set(list2)))
-
-
-def search_boolean(
+@timed
+def ranked_search(
     index: InvertedIndex,
     query: str,
-    use_merge: bool = True
-) -> list[str]:
+    scorer: Scorer = BM25Scorer(),
+    top_k: int = 5,
+    corpus_dir: str | None = None,
+) -> list[SearchResult]:
     """
-    Виконує булевий пошук (підтримує окремі слова або комбінації 'term1 AND term2').
+    Виконує ранжований пошук:
+    1. Якщо запит містить булеві оператори або фрази в лапках — знаходить відповідні документи через AST-парсер.
+    2. Ранжує знайдені документи за обраним скорером (BM25 або TF-IDF).
+    3. Відбирає top-k результатів за допомогою heapq.nlargest.
     """
-    raw_terms = [part.strip() for part in query.split("AND") if part.strip()]
-    if not raw_terms:
+    has_boolean = bool(re.search(r'\b(AND|OR|NOT)\b|[()"]', query))
+
+    if has_boolean:
+        ast_tree = parse_query(query)
+        candidate_doc_ids = ast_tree.evaluate(index)
+    else:
+        candidate_doc_ids = None
+
+    terms = list(tokenize(query))
+    if not terms:
         return []
 
-    doc_lists = []
-    for term in raw_terms:
+    scores: dict[str, float] = {}
+
+    for term in terms:
         postings = index.get_postings(term)
-        docs = sorted([p.doc_id for p in postings])
-        doc_lists.append(docs)
+        for p in postings:
+            if candidate_doc_ids is not None and p.doc_id not in candidate_doc_ids:
+                continue
+            term_score = scorer.score_term(term, p.freq, p.doc_id, index)
+            scores[p.doc_id] = scores.get(p.doc_id, 0.0) + term_score
 
-    if any(len(lst) == 0 for lst in doc_lists):
-        return []
+    if candidate_doc_ids is not None:
+        for doc_id in candidate_doc_ids:
+            scores.setdefault(doc_id, 0.0)
 
-    doc_lists.sort(key=len)
+    results = [SearchResult(score=score, doc_id=doc_id) for doc_id, score in scores.items()]
 
-    intersect_func = intersect_postings if use_merge else intersect_sets
-    current_result = doc_lists[0]
+    top_results = heapq.nlargest(top_k, results)
 
-    for next_list in doc_lists[1:]:
-        current_result = intersect_func(current_result, next_list)
-        if not current_result:
-            break
+    if corpus_dir and os.path.exists(corpus_dir):
+        for res in top_results:
+            file_path = os.path.join(corpus_dir, res.doc_id)
+            if os.path.exists(file_path):
+                with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+                    res.snippet = extract_snippet(f.read(), terms)
 
-    return current_result
+    return top_results
+
+
+@lru_cache(maxsize=128)
+def cached_search_ids(query: str, index_path: str) -> tuple[str, ...]:
+    """Кешує ідентифікатори знайдених файлів для уникнення повторних обрахунків."""
+    with open_index(index_path) as idx:
+        results = ranked_search(idx, query, top_k=5)
+        return tuple(r.doc_id for r in results)
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Швидкий булевий пошук за індексом")
-    parser.add_argument("index_path", type=str, help="Шлях до бінарного файлу індексу (index.bin)")
-    parser.add_argument("query", type=str, help="Пошуковий запит (наприклад, 'python AND code')")
-    parser.add_argument("--engine", choices=["merge", "set"], default="merge", help="Алгоритм перетину")
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Ранжований та булев пошук у документах (BM25 / TF-IDF)")
+    parser.add_argument("index_path", help="Шлях до бінарного файлу індексу (.bin)")
+    parser.add_argument("query", help="Пошуковий запит (підтримує AND, OR, NOT, дужки та фрази в лапках)")
+    parser.add_argument("--scorer", choices=["bm25", "tfidf"], default="bm25", help="Модель ранжування (за замовчуванням: bm25)")
+    parser.add_argument("-k", type=int, default=5, help="Кількість результатів (за замовчуванням: 5)")
+    parser.add_argument("--corpus", default="data", help="Шлях до папки з текстами для створення сніпетів")
+
     args = parser.parse_args()
 
-    start_load = time.perf_counter()
-    index = InvertedIndex.load(args.index_path)
-    load_time = time.perf_counter() - start_load
-    print(f"Індекс завантажено за {load_time:.4f} с.")
+    active_scorer = BM25Scorer() if args.scorer == "bm25" else TfidfScorer()
 
-    use_merge = (args.engine == "merge")
-    start_search = time.perf_counter()
-    results = search_boolean(index, args.query, use_merge=use_merge)
-    search_time = time.perf_counter() - start_search
+    with open_index(args.index_path) as index:
+        results = ranked_search(
+            index=index,
+            query=args.query,
+            scorer=active_scorer,
+            top_k=args.k,
+            corpus_dir=args.corpus,
+        )
 
-    print(f"\nРезультати для запиту: '{args.query}' (двигун: {args.engine})")
-    print(f"Знайдено документів: {len(results)} (час: {search_time * 1000:.3f} мс)")
-    for doc in results[:10]:
-        print(f" - {doc}")
-    if len(results) > 10:
-        print(f" ... і ще {len(results) - 10} документів")
+        print(f"\nЗнайдено результатів (топ-{args.k}) за моделлю {args.scorer.upper()}:")
+        print("-" * 60)
+        for i, res in enumerate(results, 1):
+            print(f"{i}. [{res.score:.4f}] {res.doc_id}")
+            if res.snippet:
+                print(f"   Сніпет: {res.snippet}")
+            print("-" * 60)
