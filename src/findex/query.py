@@ -44,11 +44,9 @@ class Phrase(Node):
         if not self.terms:
             return set()
 
-        # Початковий список: документи для першого слова
         first_postings = {p.doc_id: p.positions for p in index.get_postings(self.terms[0])}
         matching_docs: set[str] = set(first_postings.keys())
 
-        # Перевіряємо послідовність кожного наступного слова
         for offset, term in enumerate(self.terms[1:], start=1):
             term_postings = {p.doc_id: set(p.positions) for p in index.get_postings(term)}
             matching_docs &= term_postings.keys()
