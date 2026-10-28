@@ -3,6 +3,7 @@ from pathlib import Path
 from findex.index import InvertedIndex
 from findex.models import SearchResult
 from findex.query import And, Node, Or, Phrase, QueryParser, Term
+from findex.reader import iter_documents
 from findex.scoring import BaseScorer, BM25Scorer
 from findex.utils import extract_snippet, timed
 
@@ -56,7 +57,6 @@ def evaluate_ast(node: Node, index: InvertedIndex) -> set[str]:
         right_docs = evaluate_ast(node.right, index)
         return left_docs | right_docs
 
-    # Тут залишається виключно Not
     child_docs = evaluate_ast(node.child, index)
     return all_doc_ids - child_docs
 
@@ -75,7 +75,6 @@ def extract_terms_from_ast(node: Node) -> list[str]:
             _collect(n.left)
             _collect(n.right)
         else:
-            # Для Not нічого не додаємо
             pass
 
     _collect(node)
@@ -114,13 +113,25 @@ def ranked_search(
 
     if corpus_dir is not None:
         corpus_path: Path = Path(corpus_dir)
-        for res in top_results:
-            file_path: Path = corpus_path / res.doc_id
-            if file_path.exists():
-                try:
-                    text: str = file_path.read_text(encoding="utf-8")
-                except UnicodeDecodeError:
-                    text: str = file_path.read_text(encoding="utf-8", errors="ignore")
-                res.snippet = extract_snippet(text, terms)
+        if corpus_path.is_file() and corpus_path.suffix.lower() == ".jsonl":
+            needed_ids = {r.doc_id for r in top_results}
+            found_texts: dict[str, str] = {}
+            for doc_id, text in iter_documents(corpus_path):
+                if doc_id in needed_ids:
+                    found_texts[doc_id] = text
+                    if len(found_texts) == len(needed_ids):
+                        break
+            for res in top_results:
+                if res.doc_id in found_texts:
+                    res.snippet = extract_snippet(found_texts[res.doc_id], terms)
+        elif corpus_path.is_dir():
+            for res in top_results:
+                file_path: Path = corpus_path / res.doc_id
+                if file_path.exists():
+                    try:
+                        text = file_path.read_text(encoding="utf-8")
+                    except UnicodeDecodeError:
+                        text = file_path.read_text(encoding="utf-8", errors="ignore")
+                    res.snippet = extract_snippet(text, terms)
 
     return top_results

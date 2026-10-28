@@ -1,3 +1,4 @@
+import asyncio
 import json
 import sys
 from pathlib import Path
@@ -5,8 +6,10 @@ from typing import Annotated
 
 import typer
 from rich.console import Console
+from rich.live import Live
 from rich.table import Table
 
+from findex.crawler import CrawlStats, crawl
 from findex.index import InvertedIndex
 from findex.logging_conf import setup_logging
 from findex.models import SearchResult
@@ -15,7 +18,7 @@ from findex.search import ranked_search
 
 app = typer.Typer(
     name="findex",
-    help="CLI повнотекстового пошукового рушія з булевим фільтром та ранжуванням.",
+    help="CLI повнотекстового пошукового рушія з булевим фільтром, ранжуванням та асинхронним краулером.",
     add_completion=False,
 )
 console = Console()
@@ -38,16 +41,130 @@ def main(
     setup_logging(verbose)
 
 
+@app.command(name="crawl")
+def crawl_command(
+    start_url: Annotated[
+        str,
+        typer.Argument(
+            help="Початковий URL для обходу.",
+        ),
+    ],
+    output: Annotated[
+        Path,
+        typer.Option(
+            "-o",
+            "--output",
+            help="Шлях до вихідного JSONL файлу.",
+        ),
+    ] = Path("pages.jsonl"),
+    max_pages: Annotated[
+        int,
+        typer.Option(
+            "--max-pages",
+            "-m",
+            min=1,
+            help="Максимальна кількість сторінок для збору.",
+        ),
+    ] = 200,
+    concurrency: Annotated[
+        int,
+        typer.Option(
+            "--concurrency",
+            "-c",
+            min=1,
+            help="Загальний ліміт одночасних запитів.",
+        ),
+    ] = 5,
+    per_host: Annotated[
+        int,
+        typer.Option(
+            "--per-host",
+            min=1,
+            help="Ліміт одночасних запитів на один хост.",
+        ),
+    ] = 5,
+    min_delay: Annotated[
+        float,
+        typer.Option(
+            "--delay",
+            min=0.0,
+            help="Мінімальна пауза між запитами до одного хоста (сек).",
+        ),
+    ] = 0.05,
+    log_path: Annotated[
+        Path,
+        typer.Option(
+            "--log",
+            help="Файл логу обходу URL.",
+        ),
+    ] = Path("crawl.log"),
+    debug: Annotated[
+        bool,
+        typer.Option(
+            "--debug",
+            help="Запустити цикл подій asyncio у режимі debug.",
+        ),
+    ] = False,
+) -> None:
+    """Асинхронно обійти сайт і потоково записати зібрані сторінки у JSONL."""
+    stats = CrawlStats()
+
+    def build_status_table() -> Table:
+        table = Table(title="Стан асинхронного краулера (findex crawl)")
+        table.add_column("Сторінок зібрано", justify="right", style="green")
+        table.add_column("Сторінок/сек", justify="right", style="cyan")
+        table.add_column("Чекають відповіді (in-flight)", justify="right", style="yellow")
+        table.add_column("Помилок", justify="right", style="red")
+        table.add_column("Глибина черги", justify="right", style="magenta")
+
+        table.add_row(
+            f"{stats.pages_collected}/{max_pages}",
+            f"{stats.pages_per_sec:.2f}",
+            str(stats.in_flight),
+            str(stats.errors),
+            str(stats.queue_depth),
+        )
+        return table
+
+    async def _run_crawl() -> None:
+        output.parent.mkdir(parents=True, exist_ok=True)
+        with (
+            output.open("w", encoding="utf-8") as out_file,
+            Live(build_status_table(), console=console, refresh_per_second=8) as live,
+        ):
+            async for doc in crawl(
+                start_urls=[start_url],
+                max_pages=max_pages,
+                concurrency=concurrency,
+                per_host_limit=per_host,
+                min_delay=min_delay,
+                log_path=log_path,
+                stats=stats,
+            ):
+                out_file.write(json.dumps(doc, ensure_ascii=False) + "\n")
+                out_file.flush()
+                live.update(build_status_table())
+
+    asyncio.run(_run_crawl(), debug=debug)
+
+    console.print(
+        f"[green]✓[/green] Обхід завершено за [bold]{stats.elapsed:.2f} с[/bold] "
+        f"([cyan]{stats.pages_collected}[/cyan] сторінок, "
+        f"[cyan]{stats.pages_per_sec:.2f}[/cyan] стор/с, "
+        f"помилок: [red]{stats.errors}[/red]). Збережено у [bold]{output}[/bold]"
+    )
+
+
 @app.command(name="index")
 def index_command(
-    corpus_dir: Annotated[
+    corpus_path: Annotated[
         Path,
         typer.Argument(
             exists=True,
-            file_okay=False,
+            file_okay=True,
             dir_okay=True,
             readable=True,
-            help="Шлях до теки з документами (.txt).",
+            help="Шлях до теки з документами (.txt) або файлу (.jsonl).",
         ),
     ],
     output: Annotated[
@@ -59,9 +176,9 @@ def index_command(
         ),
     ] = Path("index.bin"),
 ) -> None:
-    """Побудувати інвертований індекс корпусу та зберегти його у файл."""
+    """Побудувати інвертований індекс корпусу (поза циклом подій) та зберегти його у файл."""
     with console.status("[bold green]Індексація документів..."):
-        index: InvertedIndex = InvertedIndex.build(corpus_dir)
+        index: InvertedIndex = InvertedIndex.build(corpus_path)
         index.save(output)
 
     console.print(
