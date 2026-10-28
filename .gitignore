@@ -11,3 +11,4 @@ __pycache__/
 .hypothesis/
 .ruff_cache/
 index.bin
+data/bench_corpus/

@@ -94,3 +94,35 @@ class InvertedIndex(Mapping[str, list[Posting]]):
         for doc_id, text in read_corpus(corpus_dir):
             idx.add_document(doc_id, text)
         return idx
+
+
+def build_partial(file_paths: list[Path]) -> InvertedIndex:
+    """Будує частковий інвертований індекс для переданого списку файлів."""
+    idx = InvertedIndex()
+    for path in sorted(file_paths, key=lambda p: p.name):
+        text = path.read_text(encoding="utf-8", errors="ignore")
+        idx.add_document(path.name, text)
+    return idx
+
+
+def merge_indices(indices: list[InvertedIndex]) -> InvertedIndex:
+    """Об'єднує список часткових індексів в один глобальний інвертований індекс."""
+    merged = InvertedIndex()
+    for sub_idx in indices:
+        merged.doc_lengths.update(sub_idx.doc_lengths)
+        for term, plist in sub_idx.postings.items():
+            if term not in merged.postings:
+                merged.postings[term] = []
+            merged.postings[term].extend(plist)
+
+    for plist in merged.postings.values():
+        plist.sort(key=lambda p: p.doc_id)
+
+    return merged
+
+
+def build_index(data_dir: str | Path) -> InvertedIndex:
+    """Побудова повного індексу за замовчуванням."""
+    dir_path = Path(data_dir)
+    paths = sorted([p for p in dir_path.glob("**/*") if p.is_file()])
+    return build_partial(paths)
