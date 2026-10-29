@@ -9,7 +9,7 @@ P = ParamSpec("P")
 R = TypeVar("R")
 
 
-def timed(func: Callable[P, R]) -> Callable[P, R]:
+def timed[**P, R](func: Callable[P, R]) -> Callable[P, R]:
     """Декоратор для заміру часу виконання функції з виводом у stderr."""
 
     @functools.wraps(func)

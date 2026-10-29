@@ -306,3 +306,33 @@ def stats_command(
     table.add_row("Середня довжина документа", f"{index.avg_doc_length:.2f}")
 
     console.print(table)
+
+
+@app.command()
+def serve(
+    index_path: Annotated[Path, typer.Option("-i", "--index-path", help="Шлях до індексу")] = Path(
+        "index.bin"
+    ),
+    corpus_dir: Annotated[
+        Path, typer.Option("-c", "--corpus-dir", help="Шлях до корпусу документів")
+    ] = Path("data"),
+    host: Annotated[str, typer.Option("--host", help="Хост сервера")] = "0.0.0.0",
+    port: Annotated[int, typer.Option("-p", "--port", help="Порт сервера")] = 8000,
+    workers: Annotated[int, typer.Option("-w", "--workers", help="Кількість воркерів uvicorn")] = 1,
+) -> None:
+    """Запускає HTTP-сервер FastAPI через uvicorn."""
+    import os
+
+    import uvicorn  # type: ignore[import-not-found]
+
+    os.environ["INDEX_PATH"] = str(index_path)
+    os.environ["CORPUS_DIR"] = str(corpus_dir)
+    console.print(
+        f"[green]Запуск веб-сервера findex на http://{host}:{port} (workers={workers})[/green]"
+    )
+    uvicorn.run(
+        "findex.web.app:app",
+        host=host,
+        port=port,
+        workers=workers,
+    )

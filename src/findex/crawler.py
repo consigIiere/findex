@@ -5,13 +5,11 @@ import time
 import urllib.robotparser
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
+from html.parser import HTMLParser
 from pathlib import Path
-
 from urllib.parse import parse_qsl, urlencode, urljoin, urlparse, urlunparse
 
 import httpx
-from html.parser import HTMLParser
-
 
 
 def canonicalize_url(url: str, base_url: str = "") -> str | None:
@@ -76,7 +74,7 @@ class RobotsCache:
                         self._cache[base_host] = False
                     else:
                         self._cache[base_host] = True
-                except Exception:
+                except Exception:  # noqa: BLE001
                     self._cache[base_host] = True
 
             cached = self._cache[base_host]
@@ -106,15 +104,14 @@ async def fetch(
             elapsed = time.perf_counter() - start_time
             status = resp.status_code
 
-            if status == 429 or 500 <= status < 600:
-                if attempt < max_retries:
-                    retry_after = resp.headers.get("Retry-After")
-                    if retry_after and retry_after.isdigit():
-                        delay = float(retry_after)
-                    else:
-                        delay = (base_backoff * (2**attempt)) + random.uniform(0, 0.3)
-                    await asyncio.sleep(delay)
-                    continue
+            if (status == 429 or 500 <= status < 600) and attempt < max_retries:
+                retry_after = resp.headers.get("Retry-After")
+                if retry_after and retry_after.isdigit():
+                    delay = float(retry_after)
+                else:
+                    delay = (base_backoff * (2**attempt)) + random.uniform(0, 0.3)
+                await asyncio.sleep(delay)
+                continue
 
             content_type = resp.headers.get("Content-Type", "")
             return status, body, elapsed, content_type
@@ -128,6 +125,7 @@ async def fetch(
             return 0, b"", elapsed, ""
 
     return 0, b"", 0.0, ""
+
 
 class _PageHTMLParser(HTMLParser):
     """Вбудований парсер для витягування title, тексту (без script/style) і посилань."""
@@ -365,7 +363,7 @@ async def crawl(
 
             except asyncio.CancelledError:
                 break
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 stats.errors += 1
                 crawl_logger.info(f"EXCEPTION\t{url}\t{exc}")
             finally:

@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>findex — Повнотекстовий веб-пошук</title>
+    <script src="https://unpkg.com/htmx.org@1.9.12"></script>
+    <style>
+        :root {
+            --bg: #0f172a;
+            --card: #1e293b;
+            --accent: #38bdf8;
+            --text: #f1f5f9;
+            --muted: #94a3b8;
+            --border: #334155;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            background-color: var(--bg);
+            color: var(--text);
+            line-height: 1.6;
+            padding: 2rem 1rem;
+        }
+        .container { max-width: 860px; margin: 0 auto; }
+        header { text-align: center; margin-bottom: 2rem; }
+        h1 { font-size: 2.2rem; color: var(--accent); letter-spacing: -0.5px; }
+        .subtitle { color: var(--muted); font-size: 0.95rem; margin-top: 0.3rem; }
+        .search-box {
+            background: var(--card);
+            padding: 1.25rem;
+            border-radius: 12px;
+            border: 1px solid var(--border);
+            display: flex;
+            gap: 0.75rem;
+            flex-wrap: wrap;
+            margin-bottom: 1.5rem;
+        }
+        input[type="text"] {
+            flex: 1;
+            min-width: 240px;
+            padding: 0.75rem 1rem;
+            border-radius: 8px;
+            border: 1px solid var(--border);
+            background: #0b1120;
+            color: var(--text);
+            font-size: 1rem;
+        }
+        select, button {
+            padding: 0.75rem 1.2rem;
+            border-radius: 8px;
+            border: 1px solid var(--border);
+            background: #0b1120;
+            color: var(--text);
+            font-size: 0.95rem;
+            cursor: pointer;
+        }
+        button.primary {
+            background: var(--accent);
+            color: #0f172a;
+            font-weight: 600;
+            border: none;
+        }
+        button.primary:hover { opacity: 0.9; }
+        .hit-card {
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 1.2rem;
+            margin-bottom: 1rem;
+            transition: transform 0.15s ease;
+        }
+        .hit-card:hover { border-color: var(--accent); }
+        .hit-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 0.5rem;
+        }
+        .doc-title {
+            font-size: 1.15rem;
+            font-weight: 600;
+            color: var(--accent);
+            text-decoration: none;
+            cursor: pointer;
+        }
+        .score-badge {
+            background: rgba(56, 189, 248, 0.15);
+            color: var(--accent);
+            padding: 0.2rem 0.6rem;
+            border-radius: 6px;
+            font-size: 0.85rem;
+            font-family: monospace;
+        }
+        .snippet { color: #cbd5e1; font-size: 0.95rem; }
+        .pagination {
+            display: flex;
+            justify-content: center;
+            gap: 0.75rem;
+            margin-top: 1.5rem;
+            align-items: center;
+        }
+        .page-link {
+            padding: 0.5rem 1rem;
+            background: var(--card);
+            border: 1px solid var(--border);
+            color: var(--text);
+            text-decoration: none;
+            border-radius: 6px;
+        }
+        .modal {
+            display: none;
+            position: fixed;
+            inset: 0;
+            background: rgba(0, 0, 0, 0.75);
+            align-items: center;
+            justify-content: center;
+            padding: 1rem;
+        }
+        .modal-content {
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            max-width: 700px;
+            width: 100%;
+            padding: 1.5rem;
+            max-height: 80vh;
+            overflow-y: auto;
+        }
+        pre {
+            white-space: pre-wrap;
+            background: #0b1120;
+            padding: 1rem;
+            border-radius: 8px;
+            margin-top: 1rem;
+            color: #e2e8f0;
+        }
+    </style>
+</head>
+<body>
+<div class="container">
+    <header>
+        <h1>🔍 findex Web Search</h1>
+        <p class="subtitle">Повнотекстовий пошуковий рушій на базі FastAPI, BM25 та TF-IDF</p>
+    </header>
+
+    <form class="search-box" method="get" action="/" hx-get="/" hx-target="#results-area" hx-select="#results-area" hx-push-url="true">
+        <input type="text" name="q" value="{{ q }}" placeholder="Введіть запит (наприклад: python AND search)..." required>
+        <select name="scorer">
+            <option value="bm25" {% if scorer == 'bm25' %}selected{% endif %}>BM25</option>
+            <option value="tfidf" {% if scorer == 'tfidf' %}selected{% endif %}>TF-IDF</option>
+        </select>
+        <button type="submit" class="primary">Знайти</button>
+    </form>
+
+    <div id="results-area">
+        {% if error %}
+            <div class="hit-card" style="border-color: #ef4444; color: #fca5a5;">Помилка запиту: {{ error }}</div>
+        {% elif data %}
+            <p style="color: var(--muted); margin-bottom: 1rem;">
+                Знайдено результатів: <strong>{{ data.total }}</strong> (сторінка {{ data.page }} з {{ data.total_pages }})
+            </p>
+            {% for hit in data.results %}
+                <div class="hit-card">
+                    <div class="hit-header">
+                        <a class="doc-title" onclick="openDoc('{{ hit.doc_id }}')">📄 {{ hit.doc_id }}</a>
+                        <span class="score-badge">score: {{ "%.4f"|format(hit.score) }}</span>
+                    </div>
+                    <p class="snippet">{{ hit.snippet or "Сніпет відсутній (встановіть CORPUS_DIR)" }}</p>
+                </div>
+            {% else %}
+                <div class="hit-card">За запитом «{{ q }}» нічого не знайдено.</div>
+            {% endfor %}
+
+            {% if data.total_pages > 1 %}
+                <div class="pagination">
+                    {% if data.page > 1 %}
+                        <a class="page-link" href="/?q={{ q }}&scorer={{ scorer }}&page={{ data.page - 1 }}&k={{ k }}">← Попередня</a>
+                    {% endif %}
+                    <span>Сторінка {{ data.page }} / {{ data.total_pages }}</span>
+                    {% if data.page < data.total_pages %}
+                        <a class="page-link" href="/?q={{ q }}&scorer={{ scorer }}&page={{ data.page + 1 }}&k={{ k }}">Наступна →</a>
+                    {% endif %}
+                </div>
+            {% endif %}
+        {% endif %}
+    </div>
+</div>
+
+<div id="doc-modal" class="modal" onclick="closeDoc(event)">
+    <div class="modal-content" onclick="event.stopPropagation()">
+        <div class="hit-header">
+            <h3 id="modal-title" style="color: var(--accent);">Документ</h3>
+            <button onclick="document.getElementById('doc-modal').style.display='none'">Закрити ✕</button>
+        </div>
+        <pre id="modal-body">Завантаження...</pre>
+    </div>
+</div>
+
+<script>
+async function openDoc(docId) {
+    const modal = document.getElementById('doc-modal');
+    const title = document.getElementById('modal-title');
+    const body = document.getElementById('modal-body');
+    modal.style.display = 'flex';
+    title.textContent = docId;
+    body.textContent = 'Завантаження...';
+    const res = await fetch('/docs/' + encodeURIComponent(docId));
+    if (res.ok) {
+        const data = await res.json();
+        body.textContent = data.content;
+    } else {
+        body.textContent = 'Не вдалося завантажити документ.';
+    }
+}
+function closeDoc(e) {
+    document.getElementById('doc-modal').style.display = 'none';
+}
+</script>
+</body>
+</html>

@@ -21,7 +21,7 @@ async def run_single_benchmark(concurrency: int) -> dict[str, float | int]:
     log_path = Path(f"crawl_c{concurrency}.log")
 
     t0 = time.perf_counter()
-    with out_jsonl.open("w", encoding="utf-8") as f:
+    with out_jsonl.open(  # noqa: ASYNC230"w", encoding="utf-8") as f:
         async for doc in crawl(
             start_urls=[START_URL],
             max_pages=MAX_PAGES,
