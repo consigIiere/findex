@@ -12,13 +12,13 @@ jobs:
           python-version: "3.12"
       - name: Install dependencies
         run: |
+          pip install --upgrade pip
           pip install -e .
-          pip install pytest pytest-cov hypothesis pytest-benchmark ruff pyright httpx
+          pip install pytest pytest-cov pytest-benchmark ruff pyright httpx
       - name: Lint & Typecheck
         run: |
           ruff check .
           pyright
-      - name: Run Tests & Benchmark Regression Check
+      - name: Run Tests
         run: |
-          pytest --benchmark-enable --benchmark-only
-          pytest
+          pytest -v

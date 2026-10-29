@@ -12,6 +12,7 @@ authors = [
     { name = "Oleksii Boiko", email = "boikoalex05@gmail.com" }
 ]
 dependencies = [
+    "pytest-benchmark>=4.0.0",
     "numpy>=1.26.0",
     "fastapi>=0.110.0",
     "uvicorn>=0.29.0",
