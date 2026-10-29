@@ -99,9 +99,7 @@ def test_fetch_does_not_retry_on_404() -> None:
     async def _run() -> None:
         transport = httpx.MockTransport(handler)
         async with httpx.AsyncClient(transport=transport) as client:
-            status, _, _, _ = await fetch(
-                client, "https://example.com/missing", base_backoff=0.01
-            )
+            status, _, _, _ = await fetch(client, "https://example.com/missing", base_backoff=0.01)
             assert status == 404
             assert attempts == 1
 
