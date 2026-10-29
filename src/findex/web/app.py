@@ -14,7 +14,8 @@ from fastapi.templating import Jinja2Templates
 import findex.scoring as scoring_mod
 from findex.index import InvertedIndex
 from findex.scoring import BaseScorer, BM25Scorer
-from findex.search import ranked_search
+from findex.search import SearchResult, ranked_search
+from findex.semantic import SemanticIndex, reciprocal_rank_fusion
 from findex.web.config import Settings, get_settings
 from findex.web.schemas import (
     DocumentResponseSchema,
@@ -31,10 +32,11 @@ templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
 
 class AppState:
-    """Контейнер стану індексу для безпечної ін'єкції залежностей."""
+    """Контейнер стану індексу та ембедінгів."""
 
     def __init__(self) -> None:
         self.index: InvertedIndex | None = None
+        self.semantic_index: SemanticIndex | None = None
         self.corpus_dir: Path = Path("data")
         self.documents_cache: dict[str, str] = {}
 
@@ -51,12 +53,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     if settings.index_path.is_file():
         try:
             app_state.index = InvertedIndex.load(settings.index_path)
-            logger.info("Індекс успішно завантажено з %s", settings.index_path)
         except Exception as exc:  # noqa: BLE001
             logger.error("Не вдалося завантажити індекс: %s", exc)
             app_state.index = None
     else:
-        logger.warning("Файл індексу %s не знайдено", settings.index_path)
         app_state.index = None
 
     if settings.corpus_dir.is_dir():
@@ -65,27 +65,29 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 app_state.documents_cache[file_path.name] = file_path.read_text(
                     encoding="utf-8", errors="ignore"
                 )
+    if app_state.documents_cache:
+        app_state.semantic_index = SemanticIndex.build_from_dict(app_state.documents_cache)
     yield
     app_state.index = None
+    app_state.semantic_index = None
 
 
 app = FastAPI(
     title="findex Web Search API",
-    version="0.7.0",
+    version="1.0.0",
     lifespan=lifespan,
 )
 
 
 @app.middleware("http")
 async def request_id_and_error_middleware(request: Request, call_next):  # type: ignore[no-untyped-def]
-    """Присвоює кожному запиту унікальний ID та приховує стек при 500 помилці."""
     req_id = request.headers.get("X-Request-ID", str(uuid.uuid4()))
     request.state.request_id = req_id
     try:
         response = await call_next(request)
         response.headers["X-Request-ID"] = req_id
         return response
-    except Exception:  # noqa: BLE001
+    except Exception:
         logger.exception("Неочікуваний виняток під час обробки запиту [request_id=%s]", req_id)
         return JSONResponse(
             status_code=500,
@@ -95,14 +97,12 @@ async def request_id_and_error_middleware(request: Request, call_next):  # type:
 
 
 def get_index() -> InvertedIndex:
-    """Залежність, яка повертає завантажений індекс або піднімає 503."""
     if app_state.index is None:
         raise HTTPException(status_code=503, detail="Індекс ще не завантажено")
     return app_state.index
 
 
 def get_corpus_map() -> dict[str, str]:
-    """Повертає кеш текстів документів."""
     return app_state.documents_cache
 
 
@@ -117,7 +117,6 @@ def _resolve_scorer(name: str) -> BaseScorer:
 
 @app.get("/health", response_model=HealthResponseSchema)
 def health_check(idx: Annotated[InvertedIndex, Depends(get_index)]) -> HealthResponseSchema:
-    """Перевірка готовності сервісу (503, якщо індекс не завантажений)."""
     return HealthResponseSchema(status="ok", index_loaded=idx is not None)
 
 
@@ -127,19 +126,42 @@ def search_endpoint(
     q: Annotated[str, Query(min_length=1, description="Пошуковий запит")],
     k: Annotated[int, Query(ge=1, le=100, description="Кількість результатів на сторінці")] = 10,
     scorer: Annotated[Literal["bm25", "tfidf"], Query(description="Алгоритм ранжування")] = "bm25",
+    mode: Annotated[
+        Literal["lexical", "semantic", "hybrid"],
+        Query(description="Режим пошуку: lexical, semantic або hybrid (RRF)"),
+    ] = "lexical",
     page: Annotated[int, Query(ge=1, description="Номер сторінки")] = 1,
 ) -> SearchResponseSchema:
-    """Синхронний маршрут пошуку (виконується у пулі потоків, не блокуючи цикл подій)."""
+    """Синхронний маршрут пошуку з підтримкою lexical, semantic та hybrid (RRF)."""
     scorer_obj = _resolve_scorer(scorer)
     corpus_dir = app_state.corpus_dir if app_state.corpus_dir.is_dir() else None
 
-    all_results = ranked_search(
-        index=idx,
-        query_str=q,
-        scorer=scorer_obj,
-        top_k=1000,
-        corpus_dir=corpus_dir,
-    )
+    lexical_results: list[SearchResult] = []
+    if mode in ("lexical", "hybrid"):
+        lexical_results = ranked_search(
+            index=idx,
+            query_str=q,
+            scorer=scorer_obj,
+            top_k=1000,
+            corpus_dir=corpus_dir,
+        )
+
+    semantic_results: list[SearchResult] = []
+    if mode in ("semantic", "hybrid"):
+        sem_idx = app_state.semantic_index
+        if sem_idx is None:
+            corpus_map = get_corpus_map()
+            if corpus_map:
+                sem_idx = SemanticIndex.build_from_dict(corpus_map)
+        if sem_idx is not None:
+            semantic_results = sem_idx.search(q, top_k=1000)
+
+    if mode == "lexical":
+        all_results = lexical_results
+    elif mode == "semantic":
+        all_results = semantic_results
+    else:
+        all_results = reciprocal_rank_fusion(lexical_results, semantic_results, top_k=1000)
 
     total = len(all_results)
     total_pages = max(1, math.ceil(total / k))
@@ -172,7 +194,6 @@ def get_document(
     idx: Annotated[InvertedIndex, Depends(get_index)],
     corpus_map: Annotated[dict[str, str], Depends(get_corpus_map)],
 ) -> DocumentResponseSchema:
-    """Повертає повний вміст документа або 404, якщо документ невідомий."""
     if doc_id not in idx.doc_lengths:
         raise HTTPException(status_code=404, detail=f"Документ '{doc_id}' не знайдено")
 
@@ -186,7 +207,6 @@ def get_document(
 
 @app.get("/stats", response_model=StatsResponseSchema)
 def get_stats(idx: Annotated[InvertedIndex, Depends(get_index)]) -> StatsResponseSchema:
-    """Повертає статистику індексу та топ-10 найчастіших термів."""
     postings_map = getattr(idx, "postings", None) or getattr(idx, "index", {})
     term_counts = [(term, sum(p.freq for p in plist)) for term, plist in postings_map.items()]
     top_10 = sorted(term_counts, key=lambda x: x[1], reverse=True)[:10]
@@ -208,10 +228,10 @@ def web_ui(
     request: Request,
     q: str = "",
     scorer: Literal["bm25", "tfidf"] = "bm25",
+    mode: Literal["lexical", "semantic", "hybrid"] = "lexical",
     page: int = 1,
     k: int = 5,
 ) -> HTMLResponse:
-    """Віддає головну веб-сторінку пошуку на базі Jinja2 та HTMX."""
     results_data: SearchResponseSchema | None = None
     error_msg: str | None = None
 
@@ -222,6 +242,7 @@ def web_ui(
                 q=q.strip(),
                 k=k,
                 scorer=scorer,
+                mode=mode,
                 page=max(1, page),
             )
         except Exception as exc:  # noqa: BLE001
@@ -233,6 +254,7 @@ def web_ui(
         context={
             "q": q,
             "scorer": scorer,
+            "mode": mode,
             "page": page,
             "k": k,
             "data": results_data,

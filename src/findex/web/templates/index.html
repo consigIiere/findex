@@ -146,6 +146,11 @@
 
     <form class="search-box" method="get" action="/" hx-get="/" hx-target="#results-area" hx-select="#results-area" hx-push-url="true">
         <input type="text" name="q" value="{{ q }}" placeholder="Введіть запит (наприклад: python AND search)..." required>
+                <select name="mode">
+            <option value="lexical" {% if mode == "lexical" %}selected{% endif %}>Lexical (BM25/TF-IDF)</option>
+            <option value="semantic" {% if mode == "semantic" %}selected{% endif %}>Semantic (Embeddings)</option>
+            <option value="hybrid" {% if mode == "hybrid" %}selected{% endif %}>Hybrid (RRF)</option>
+        </select>
         <select name="scorer">
             <option value="bm25" {% if scorer == 'bm25' %}selected{% endif %}>BM25</option>
             <option value="tfidf" {% if scorer == 'tfidf' %}selected{% endif %}>TF-IDF</option>

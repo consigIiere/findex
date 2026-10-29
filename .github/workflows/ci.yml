@@ -1,0 +1,24 @@
+name: CI & Benchmarks
+
+on: [push, pull_request]
+
+jobs:
+  test-and-benchmark:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: |
+          pip install -e .
+          pip install pytest pytest-cov hypothesis pytest-benchmark ruff pyright httpx
+      - name: Lint & Typecheck
+        run: |
+          ruff check .
+          pyright
+      - name: Run Tests & Benchmark Regression Check
+        run: |
+          pytest --benchmark-enable --benchmark-only
+          pytest

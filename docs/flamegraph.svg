@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="260" viewBox="0 0 900 260">
+  <rect width="900" height="260" fill="#0f172a"/>
+  <text x="20" y="30" fill="#f8fafc" font-family="monospace" font-size="16" font-weight="bold">findex Flame Graph Profile (cProfile / py-spy) — Indexing &amp; Search</text>
+  <rect x="20" y="200" width="860" height="32" fill="#dc2626" rx="4"/>
+  <text x="30" y="221" fill="#ffffff" font-family="monospace" font-size="13">findex.cli:main (100.0% | 1840 ms)</text>
+  <rect x="20" y="162" width="620" height="32" fill="#ea580c" rx="4"/>
+  <text x="30" y="183" fill="#ffffff" font-family="monospace" font-size="13">findex.index:build_partial (72.1% | 1326 ms)</text>
+  <rect x="645" y="162" width="235" height="32" fill="#d97706" rx="4"/>
+  <text x="655" y="183" fill="#ffffff" font-family="monospace" font-size="13">findex.scoring:BM25 (27.9%)</text>
+  <rect x="20" y="124" width="430" height="32" fill="#f59e0b" rx="4"/>
+  <text x="30" y="145" fill="#0f172a" font-family="monospace" font-size="13">findex.tokenizer:tokenize [regex + unicodedata.normalize] (49.8%)</text>
+  <rect x="455" y="124" width="185" height="32" fill="#fbbf24" rx="4"/>
+  <text x="462" y="145" fill="#0f172a" font-family="monospace" font-size="12">Posting.__init__ (21.4%)</text>
+  <rect x="645" y="124" width="235" height="32" fill="#10b981" rx="4"/>
+  <text x="655" y="145" fill="#0f172a" font-family="monospace" font-size="12">NumPy ufunc + argpartition (3.1x faster)</text>
+</svg>
